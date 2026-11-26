@@ -7,7 +7,8 @@ use axum::{
     Router,
 };
 use tower_http::cors::{AllowOrigin, CorsLayer};
-use tower_http::trace::TraceLayer;
+use tower_http::trace::{DefaultMakeSpan, DefaultOnFailure, DefaultOnResponse, TraceLayer};
+use tracing::Level;
 
 use crate::{
     ai::{Provider, SousChefService},
@@ -47,6 +48,11 @@ pub fn build_router(state: AppState) -> Router {
         .route("/v1/sous-chef", post(routes::sous_chef))
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
         .layer(cors)
-        .layer(TraceLayer::new_for_http())
+        .layer(
+            TraceLayer::new_for_http()
+                .make_span_with(DefaultMakeSpan::new().level(Level::INFO))
+                .on_response(DefaultOnResponse::new().level(Level::INFO))
+                .on_failure(DefaultOnFailure::new().level(Level::ERROR)),
+        )
         .with_state(state)
 }

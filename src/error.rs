@@ -68,11 +68,14 @@ impl ApiError {
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        if matches!(self, Self::Internal(_) | Self::Misconfigured(_)) {
-            tracing::error!(error = %self, "sous-chef request failed");
-        }
-
         let status = self.status();
+
+        if status.is_server_error() {
+            tracing::error!(%status, code = self.code(), error = %self, "request failed");
+        } else {
+            tracing::warn!(%status, code = self.code(), error = %self, "request rejected");
+        }
+        tracing::debug!(details = ?self.details(), "error details");
         let body = json!({
             "error": {
                 "code": self.code(),
