@@ -1,10 +1,43 @@
 use std::net::SocketAddr;
 
-use recipe_generator::{build_router, build_state, Config};
+use recipe_generator::{build_router, build_state, Config, Mode};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
+
+fn print_usage() {
+    println!(
+        "Usage: recipe-generator [--test]\n\n  --test      force the deterministic testing provider (no Gemini calls)\n  -h, --help  show this help"
+    );
+}
+
+/// Parses the CLI. `--test` wins over `SOUS_CHEF_MODE` and `GEMINI_API_KEY`.
+fn parse_args() -> Result<bool, String> {
+    let mut force_testing = false;
+
+    for arg in std::env::args().skip(1) {
+        match arg.as_str() {
+            "--test" => force_testing = true,
+            "-h" | "--help" => {
+                print_usage();
+                std::process::exit(0);
+            }
+            other => return Err(format!("unknown argument: {other}")),
+        }
+    }
+
+    Ok(force_testing)
+}
 
 #[tokio::main]
 async fn main() {
+    let force_testing = match parse_args() {
+        Ok(force_testing) => force_testing,
+        Err(error) => {
+            eprintln!("{error}");
+            print_usage();
+            std::process::exit(2);
+        }
+    };
+
     dotenvy::dotenv().ok();
 
     tracing_subscriber::registry()
@@ -15,7 +48,8 @@ async fn main() {
         .with(tracing_subscriber::fmt::layer())
         .init();
 
-    let config = match Config::from_env() {
+    let mode_override = force_testing.then_some(Mode::Testing);
+    let config = match Config::load(mode_override) {
         Ok(config) => config,
         Err(error) => {
             eprintln!("configuration error: {error}");
