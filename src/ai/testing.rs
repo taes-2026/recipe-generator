@@ -9,6 +9,12 @@ pub struct TestingProvider;
 
 impl TestingProvider {
     pub fn generate(&self, request: &GenerateRequest) -> Result<GeneratedRecipe, ProviderError> {
+        tracing::debug!(
+            leftovers = request.ingredients.len(),
+            pantry = request.pantry.len(),
+            "testing provider generating recipe"
+        );
+
         let base = base_ingredients(request)?;
         let names: Vec<String> = base.iter().map(|(name, _, _)| name.clone()).collect();
         let has_oil = names.iter().any(|name| normalize(name) == "azeite");

@@ -26,6 +26,19 @@ async fn main() {
     let addr = config.bind_addr;
     let mode = config.mode;
 
+    tracing::info!(
+        version = env!("CARGO_PKG_VERSION"),
+        ?mode,
+        model = %config.gemini_model,
+        addr = %addr,
+        timeout_ms = config.upstream_timeout.as_millis() as u64,
+        max_attempts = config.max_attempts,
+        rate_limit_per_minute = config.rate_limit_per_minute,
+        allowed_origins = config.allowed_origins.len(),
+        api_key_configured = config.gemini_api_key.is_some(),
+        "sous-chef starting"
+    );
+
     let state = match build_state(config) {
         Ok(state) => state,
         Err(error) => {

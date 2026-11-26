@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::{collections::HashSet, time::Instant};
 
 use uuid::Uuid;
 
@@ -31,12 +31,33 @@ impl SousChefService {
     }
 
     pub async fn generate(&self, request: GenerateRequest) -> Result<GenerateResponse, ApiError> {
-        validate_request(&request).map_err(ApiError::InvalidInput)?;
+        let started = Instant::now();
+
+        validate_request(&request).map_err(|violations| {
+            tracing::warn!(
+                count = violations.len(),
+                servings = request.profile.servings,
+                leftovers = request.ingredients.len(),
+                "request validation failed"
+            );
+            tracing::debug!(?violations, "validation details");
+            ApiError::InvalidInput(violations)
+        })?;
+
+        tracing::info!(
+            servings = request.profile.servings,
+            leftovers = request.ingredients.len(),
+            pantry = request.pantry.len(),
+            diet = %request.profile.diet,
+            max_minutes = request.max_minutes,
+            "recipe generation started"
+        );
 
         let mut feedback: Vec<String> = Vec::new();
         let mut last_failure: Option<ApiError> = None;
 
         for attempt in 1..=self.max_attempts {
+            let attempt_started = Instant::now();
             let built_prompt = prompt::build_prompt(&request, &feedback);
 
             match self.provider.generate(&built_prompt, &request).await {
@@ -45,8 +66,19 @@ impl SousChefService {
 
                     match validate_recipe(&recipe, &request) {
                         Ok(()) => {
+                            let id = format!("ai-{}", Uuid::new_v4());
+                            tracing::info!(
+                                recipe = %id,
+                                attempt,
+                                source = self.provider.source(),
+                                model = self.provider.model(),
+                                ingredients = recipe.ingredients.len(),
+                                steps = recipe.steps.len(),
+                                elapsed_ms = started.elapsed().as_millis() as u64,
+                                "recipe generated"
+                            );
                             return Ok(GenerateResponse {
-                                id: format!("ai-{}", Uuid::new_v4()),
+                                id,
                                 recipe,
                                 meta: ResponseMeta {
                                     source: self.provider.source().to_owned(),
@@ -61,18 +93,32 @@ impl SousChefService {
                             });
                         }
                         Err(violations) => {
-                            tracing::warn!(attempt, ?violations, "model output rejected");
+                            tracing::warn!(
+                                attempt,
+                                count = violations.len(),
+                                elapsed_ms = attempt_started.elapsed().as_millis() as u64,
+                                "model output rejected"
+                            );
+                            tracing::debug!(?violations, "validation details");
                             last_failure = Some(ApiError::InvalidModelOutput(violations.clone()));
                             feedback = violations;
                         }
                     }
                 }
                 Err(error) => {
-                    tracing::warn!(attempt, error = %error, "provider call failed");
+                    tracing::warn!(
+                        attempt,
+                        provider = self.provider.source(),
+                        model = self.provider.model(),
+                        elapsed_ms = attempt_started.elapsed().as_millis() as u64,
+                        error = %error,
+                        "provider call failed"
+                    );
 
                     match error {
                         // Schema slips are recoverable with the parser message.
                         ProviderError::InvalidSchema(message) if attempt < self.max_attempts => {
+                            tracing::info!(attempt, reason = "invalid_schema", "retrying");
                             feedback = vec![format!(
                                 "the previous answer did not match the JSON schema: {message}"
                             )];
@@ -81,11 +127,14 @@ impl SousChefService {
                         }
                         error if error.retryable() && attempt < self.max_attempts => {
                             last_failure = Some(api_error_from(error));
+                            let backoff_ms = 750 * u64::from(attempt);
+                            tracing::info!(
+                                attempt,
+                                backoff_ms,
+                                "retrying transient upstream error"
+                            );
                             // Capacity errors usually clear in a second or two.
-                            tokio::time::sleep(std::time::Duration::from_millis(
-                                750 * u64::from(attempt),
-                            ))
-                            .await;
+                            tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
                             continue;
                         }
                         error => return Err(api_error_from(error)),
@@ -93,6 +142,12 @@ impl SousChefService {
                 }
             }
         }
+
+        tracing::warn!(
+            attempts = self.max_attempts,
+            elapsed_ms = started.elapsed().as_millis() as u64,
+            "recipe generation failed"
+        );
 
         Err(last_failure.unwrap_or_else(|| ApiError::Internal("no attempt was made".to_owned())))
     }

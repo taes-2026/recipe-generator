@@ -37,15 +37,30 @@ pub async fn sous_chef(
         .limiter
         .check(&key, state.config.rate_limit_per_minute, now_secs())
     {
+        tracing::warn!(
+            client = %key,
+            limit = state.config.rate_limit_per_minute,
+            "rate limit exceeded"
+        );
         return Err(ApiError::RateLimited);
     }
 
     let Json(request) = body.map_err(|rejection| {
+        tracing::warn!(body = %rejection.body_text(), "malformed request body");
         ApiError::InvalidInput(vec![format!(
             "malformed JSON body: {}",
             rejection.body_text()
         )])
     })?;
+
+    tracing::debug!(
+        servings = request.profile.servings,
+        leftovers = request.ingredients.len(),
+        pantry = request.pantry.len(),
+        diet = %request.profile.diet,
+        max_minutes = request.max_minutes,
+        "request received"
+    );
 
     let response = state.service.generate(request).await?;
 

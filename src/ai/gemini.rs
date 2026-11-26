@@ -1,3 +1,5 @@
+use std::time::Instant;
+
 use reqwest::StatusCode;
 use serde_json::{json, Value};
 
@@ -44,6 +46,9 @@ impl GeminiProvider {
             "{}/v1beta/models/{}:generateContent",
             self.base_url, self.model
         );
+        let started = Instant::now();
+
+        tracing::debug!(model = %self.model, "calling gemini");
 
         let response = self
             .client
@@ -52,17 +57,44 @@ impl GeminiProvider {
             .json(&self.request_body(prompt))
             .send()
             .await
-            .map_err(map_transport_error)?;
+            .map_err(|error| {
+                let mapped = map_transport_error(error);
+                tracing::warn!(
+                    model = %self.model,
+                    elapsed_ms = started.elapsed().as_millis() as u64,
+                    error = %mapped,
+                    "gemini transport failed"
+                );
+                mapped
+            })?;
 
         let status = response.status();
         let body = response.text().await.map_err(map_transport_error)?;
+        let elapsed_ms = started.elapsed().as_millis() as u64;
+
+        tracing::info!(model = %self.model, status = %status, elapsed_ms, "gemini responded");
 
         if !status.is_success() {
-            return Err(map_status(status, &body));
+            let error = map_status(status, &body);
+            tracing::warn!(
+                model = %self.model,
+                status = %status,
+                elapsed_ms,
+                error = %error,
+                "gemini request failed"
+            );
+            return Err(error);
         }
 
         let envelope: Value = serde_json::from_str(&body)
             .map_err(|error| ProviderError::InvalidOutput(format!("provider envelope: {error}")))?;
+
+        tracing::debug!(
+            model = %self.model,
+            prompt_tokens = envelope.pointer("/usageMetadata/promptTokenCount").and_then(|v| v.as_u64()),
+            output_tokens = envelope.pointer("/usageMetadata/candidatesTokenCount").and_then(|v| v.as_u64()),
+            "gemini usage"
+        );
 
         parse_candidate(&envelope)
     }
