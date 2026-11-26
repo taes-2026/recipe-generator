@@ -76,16 +76,26 @@ impl Default for Config {
 
 impl Config {
     pub fn from_env() -> Result<Self, ConfigError> {
+        Self::load(None)
+    }
+
+    /// Builds the config from the environment. `mode_override` wins over
+    /// `SOUS_CHEF_MODE`, which is how `--test` forces the testing provider
+    /// without touching `.env`.
+    pub fn load(mode_override: Option<Mode>) -> Result<Self, ConfigError> {
         let mut config = Self::default();
         let api_key = env_value("GEMINI_API_KEY");
 
-        config.mode = match env_value("SOUS_CHEF_MODE") {
-            Some(raw) => Mode::parse(&raw).ok_or_else(|| ConfigError::Invalid {
-                var: "SOUS_CHEF_MODE",
-                message: format!("expected 'gemini' or 'testing', got '{raw}'"),
-            })?,
-            None if api_key.is_some() => Mode::Gemini,
-            None => Mode::Testing,
+        config.mode = match mode_override {
+            Some(mode) => mode,
+            None => match env_value("SOUS_CHEF_MODE") {
+                Some(raw) => Mode::parse(&raw).ok_or_else(|| ConfigError::Invalid {
+                    var: "SOUS_CHEF_MODE",
+                    message: format!("expected 'gemini' or 'testing', got '{raw}'"),
+                })?,
+                None if api_key.is_some() => Mode::Gemini,
+                None => Mode::Testing,
+            },
         };
 
         if config.mode == Mode::Gemini && api_key.is_none() {
@@ -182,6 +192,25 @@ fn bind_address() -> Result<SocketAddr, ConfigError> {
     match env_parse("PORT")? {
         Some(port) => Ok(SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), port)),
         None => Ok(Config::default().bind_addr),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mode_parse_accepts_aliases() {
+        assert_eq!(Mode::parse("gemini"), Some(Mode::Gemini));
+        assert_eq!(Mode::parse("testing"), Some(Mode::Testing));
+        assert_eq!(Mode::parse("test"), Some(Mode::Testing));
+        assert_eq!(Mode::parse("nonsense"), None);
+    }
+
+    #[test]
+    fn test_override_forces_testing() {
+        let config = Config::load(Some(Mode::Testing)).expect("config loads");
+        assert_eq!(config.mode, Mode::Testing);
     }
 }
 
